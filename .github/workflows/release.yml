@@ -6,6 +6,10 @@ on:
     - main
 
 jobs:
+  env:
+    BITRISE_CACHE_ENDPOINT: ${{ vars.BITRISE_CACHE_ENDPOINT }}
+    BITRISE_ACCESS_TOKEN: ${{ secrets.BITRISE_ACCESS_TOKEN }}
+    BITRISE_WORKSPACE_SLUG: ${{ secrets.BITRISE_WORKSPACE_SLUG }}
   version:
     outputs:
       version: ${{ steps.echo.outputs.version }}
@@ -13,15 +17,16 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - uses: bazelbuild/setup-bazelisk@v2
-      - name: Cache
-        id: cache
-        uses: actions/cache@v2
-        with:
-          path: ~/bazel-disk-cache
-          key: capnp-cache
+      # - name: Cache
+      #   id: cache
+      #   uses: actions/cache@v2
+      #   with:
+      #     path: ~/bazel-disk-cache
+      #     key: capnp-cache
       - name: build capnp
         run: |
-          bazel build --disk_cache=~/bazel-disk-cache --remote_cache=https://bazel:${{ secrets.BAZEL_CACHE_KEY }}@bazel-remote-cache.devprod.cloudflare.dev @capnp-cpp//src/capnp:capnp_tool
+          ./setup_bitrise.sh
+          bazel build --config bitrise @capnp-cpp//src/capnp:capnp_tool
       - id: echo
         run: |
           echo "::set-output name=version::1.$(bazel-bin/external/capnp-cpp/src/capnp/capnp_tool eval src/workerd/io/compatibility-date.capnp supportedCompatibilityDate | tr -d '-' | tr -d '"').0"
@@ -32,26 +37,33 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v2
-      - name: Cache
-        id: cache
-        uses: actions/cache@v2
-        with:
-          path: ~/bazel-disk-cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bazel-disk-cache
+      # - name: Cache
+      #   id: cache
+      #   uses: actions/cache@v2
+      #   with:
+      #     path: ~/bazel-disk-cache
+      #     key: ${{ runner.os }}-${{ runner.arch }}-bazel-disk-cache
 
       - name: Setup Linux
         if: runner.os == 'Linux'
         run: |
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get install -y build-essential git clang libc++-dev
+          ./setup_bitrise.sh
+      - name: Setup MacOS
+        if: runner.os == 'macOS'
+        run: |
+          ./setup_bitrise.sh
+      - name: Setup Windows
       - name: Setup Windows
         if: runner.os == 'Windows'
         run: |
+          .\setup_bitrise.ps1
           [System.IO.File]::WriteAllLines((Join-Path -Path $env:USERPROFILE -ChildPath '.bazelrc'), 'startup --output_user_root=C:/tmp')
 
       - name: Bazel build
         run: |
-          bazelisk build --disk_cache=~/bazel-disk-cache  --remote_cache=https://bazel:${{ secrets.BAZEL_CACHE_KEY }}@bazel-remote-cache.devprod.cloudflare.dev -c opt //src/workerd/server:workerd
+          bazelisk build --config bitrise -c opt //src/workerd/server:workerd
       - name: Strip debug symbols
         if: runner.os != 'Windows'
         run: |
@@ -60,11 +72,11 @@ jobs:
           # Strip debug information from the binary, this is acceptable as debug symbols are not
           # generated for the release configuration. Regular symbols are still included.
           strip -S bazel-bin/src/workerd/server/workerd
-      - name: Upload binary
-        uses: actions/upload-artifact@v3.1.0
-        with:
-          name: ${{ runner.os }}-${{ runner.arch }}-binary
-          path: bazel-bin/src/workerd/server/workerd${{ runner.os == 'Windows' && '.exe' || '' }}
+      # - name: Upload binary
+      #   uses: actions/upload-artifact@v3.1.0
+      #   with:
+      #     name: ${{ runner.os }}-${{ runner.arch }}-binary
+      #     path: bazel-bin/src/workerd/server/workerd${{ runner.os == 'Windows' && '.exe' || '' }}
   check-tag:
     name: Check tag is new
     outputs:
@@ -83,66 +95,66 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  tag-and-release:
-    name: Tag & Release
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-    needs: [check-tag, version, build]
-    runs-on: ubuntu-latest
-    if: needs.check-tag.outputs.exists != 'true'
-    steps:
-      - run: echo ${{ needs.check-tag.outputs.exists }}
-      - name: Checkout Repo
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-      - run: git tag v${{ needs.version.outputs.version }} && git push origin v${{ needs.version.outputs.version }}
-      - uses: ncipollo/release-action@v1
-        id: create_release
-        with:
-          generateReleaseNotes: true
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: v${{ needs.version.outputs.version }}
+  # tag-and-release:
+  #   name: Tag & Release
+  #   outputs:
+  #     upload_url: ${{ steps.create_release.outputs.upload_url }}
+  #   needs: [check-tag, version, build]
+  #   runs-on: ubuntu-latest
+  #   if: needs.check-tag.outputs.exists != 'true'
+  #   steps:
+  #     - run: echo ${{ needs.check-tag.outputs.exists }}
+  #     - name: Checkout Repo
+  #       uses: actions/checkout@v3
+  #       with:
+  #         fetch-depth: 0
+  #     - run: git tag v${{ needs.version.outputs.version }} && git push origin v${{ needs.version.outputs.version }}
+  #     - uses: ncipollo/release-action@v1
+  #       id: create_release
+  #       with:
+  #         generateReleaseNotes: true
+  #         token: ${{ secrets.GITHUB_TOKEN }}
+  #         tag: v${{ needs.version.outputs.version }}
 
-  upload-artifacts:
-    name: Upload Artifacts
-    needs: [tag-and-release]
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [linux-64, darwin-64, windows-64]
-        include:
-          - arch: linux-64
-            name: Linux-X64
-          - arch: darwin-64
-            name: macOS-X64
-          - arch: windows-64
-            name: Windows-X64
-    steps:
-      - name: Download ${{ matrix.name }}
-        uses: actions/download-artifact@v3.0.0
-        with:
-          name: ${{ matrix.name }}-binary
-          path: /tmp
-      # Set execute permissions before compressing the binary
-      - if: matrix.arch != 'windows-64'
-        run: chmod +x /tmp/workerd
-      - name: Compress release binary
-        run: |
-            # As of release v1.20230404.0 the Linux x64 binary after debug_strip is 65.8 MB,
-            # 21.0 MB with gzip and 17.3 MB with brotli -9. Use gzip as a widely supported format
-            # which still produces an acceptable compressed size.
-            gzip -9N /tmp/workerd${{ matrix.arch == 'windows-64' && '.exe' || '' }}
-      - run: mv /tmp/workerd${{ matrix.arch == 'windows-64' && '.exe' || '' }}.gz /tmp/workerd-${{ matrix.arch }}.gz
-      # Upload compressed release binaries – one set of artifacts is sufficient with gzip being
-      # widely supported
-      - name: Upload Release Assets
-        id: upload-release-asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.tag-and-release.outputs.upload_url }}
-          asset_path: /tmp/workerd-${{ matrix.arch }}.gz
-          asset_name: workerd-${{ matrix.arch }}.gz
-          asset_content_type: application/gzip
+  # upload-artifacts:
+  #   name: Upload Artifacts
+  #   needs: [tag-and-release]
+  #   runs-on: ubuntu-latest
+  #   strategy:
+  #     matrix:
+  #       arch: [linux-64, darwin-64, windows-64]
+  #       include:
+  #         - arch: linux-64
+  #           name: Linux-X64
+  #         - arch: darwin-64
+  #           name: macOS-X64
+  #         - arch: windows-64
+  #           name: Windows-X64
+  #   steps:
+  #     - name: Download ${{ matrix.name }}
+  #       uses: actions/download-artifact@v3.0.0
+  #       with:
+  #         name: ${{ matrix.name }}-binary
+  #         path: /tmp
+  #     # Set execute permissions before compressing the binary
+  #     - if: matrix.arch != 'windows-64'
+  #       run: chmod +x /tmp/workerd
+  #     - name: Compress release binary
+  #       run: |
+  #           # As of release v1.20230404.0 the Linux x64 binary after debug_strip is 65.8 MB,
+  #           # 21.0 MB with gzip and 17.3 MB with brotli -9. Use gzip as a widely supported format
+  #           # which still produces an acceptable compressed size.
+  #           gzip -9N /tmp/workerd${{ matrix.arch == 'windows-64' && '.exe' || '' }}
+  #     - run: mv /tmp/workerd${{ matrix.arch == 'windows-64' && '.exe' || '' }}.gz /tmp/workerd-${{ matrix.arch }}.gz
+  #     # Upload compressed release binaries – one set of artifacts is sufficient with gzip being
+  #     # widely supported
+  #     - name: Upload Release Assets
+  #       id: upload-release-asset
+  #       uses: actions/upload-release-asset@v1
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #       with:
+  #         upload_url: ${{ needs.tag-and-release.outputs.upload_url }}
+  #         asset_path: /tmp/workerd-${{ matrix.arch }}.gz
+  #         asset_name: workerd-${{ matrix.arch }}.gz
+  #         asset_content_type: application/gzip

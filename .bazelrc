@@ -91,3 +91,8 @@ build:windows --cxxopt='/DWINDOWS_LEAN_AND_MEAN' --host_cxxopt='/DWINDOWS_LEAN_A
 build:windows --cxxopt='-Wno-unused-command-line-argument' --host_cxxopt='-Wno-unused-command-line-argument'
 
 build:windows --@capnp-cpp//src/kj:openssl=True --@capnp-cpp//src/kj:zlib=True
+
+try-import %workspace%/.bitrise.bazelrc
+# windows fix
+try-import .bitrise.bazelrc
+try-import %workspace%\.bitrise.bazelrc
